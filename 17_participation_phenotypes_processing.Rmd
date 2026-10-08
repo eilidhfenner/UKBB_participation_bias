@@ -1,0 +1,952 @@
+---
+title: "17_participation_phenotypes_processing"
+output: html_document
+date: "2024-09-24"
+---
+
+# Processing participation phenotypes
+This script processes phenotype data from UKBB cognitive tests and participation measures. It was run in a mem1_ssd1_v2_x8 instance.
+
+First, each person is marked as having completed each online cognitive test or not, in both rounds of online testing. Then z-scores are made for fluid intelligence and reaction time, which are used as measures of cognition. Next, the participation phenotypes are derived, such as whether someone completed any or all of the online cognitive tests, was lost to follow-up, or had an email address. Finally, flags for neuropsychiatric diagnoses (from ICD-10 codes) and the variables used to reweight the sample are added, and the script writes out `phenotypes_all_cleaned_inc_reweighting.csv` for stages 18 and 19.
+
+# Set-up 
+## Load required libraries 
+```{r setup, include=FALSE}
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+install.packages('moments')
+library(moments)
+install.packages('corrplot')
+library(corrplot)
+library(purrr)
+
+```
+
+## Load in cognitive data
+Note that all input files in this script come from the UK Biobank cohort browser. Required fields were selected there and exported to .csv using the Table Exporter tool on the RAP. 
+```{r}
+system('dx download ./phenotype_cohorts/*cog.csv')
+online_cog=read.csv('online_cog.csv')
+AC_cog=read.csv('AC_cog.csv')
+cog=merge(AC_cog, online_cog, by='eid')
+
+system('dx download ./phenotype_cohorts/missing_NM_phenotypes_participant.csv')
+missing_phen=read.csv('missing_NM_phenotypes_participant.csv')
+cog=merge(cog, missing_phen, by='eid')
+
+system('dx download ./phenotype_cohorts/missing_phens_SDS_participant.csv')
+missing_phen=read.csv('missing_phens_SDS_participant.csv')
+cog=merge(cog, missing_phen, by='eid')
+
+system('dx download ./phenotype_cohorts/prosp_mem.csv')
+missing_phen=read.csv('prosp_mem.csv')
+cog=merge(cog, missing_phen, by='eid')
+
+cog$Sample_ID<-cog$eid
+backup_cog<-cog
+
+```
+
+# Marking each online cognitive test as complete or not
+## Numeric memory
+This test was completed at in-person assessment centres and online. It is a test of working memory, and involved remembering numbers that progressively increased by one digit and inputting them immediately after presentation. 
+
+### Online
+```{r}
+cog %>% count(p20240_i0)
+cog$Online1_Numeric_memory_completed<- F
+cog$Online1_Numeric_memory_completed[!is.na(cog$p20240_i0)]<- T
+cog %>% count(Online1_Numeric_memory_completed)
+
+```
+
+## Pairs matching 
+This test was completed at in-person assessment centres and online. It is a test of declarative memory. A matrix of face up cards was presented, and participants were asked to remember the position of as many pairs of matching cards as possible. Cards were then turned face-down, and participants selected the pairs of cards. Two rounds of this task were run, with the second involving a larger number of cards, and therefore pairs, to remember. 
+
+### Online (only taken at online 1) 
+```{r}
+cog %>% count(p20244_i0)
+cog$Online1_Pairs_matching_completed<- F
+cog$Online1_Pairs_matching_completed[cog$p20244_i0=='Completed']<- T
+cog %>% count(Online1_Pairs_matching_completed)
+```
+## TMTA
+This test was completed at in-person assessment centres and online. It is a test of processing speed. Participants were presented with a set of digits scattered across the screen and asked to click on them in numeric order.
+### Online - 1 
+```{r}
+cog %>% count(p20156_i0)
+cog$Online1_TMTA_completed<- F
+cog$Online1_TMTA_completed[!is.na(cog$p20156_i0)]<- T
+cog %>% count(Online1_TMTA_completed)
+
+```
+### Online - 2 
+```{r}
+cog %>% count(p20156_i1)
+cog$Online2_TMTA_completed<- F
+cog$Online2_TMTA_completed[!is.na(cog$p20156_i1)]<- T
+cog %>% count(Online2_TMTA_completed)
+```
+
+## TMTB
+This test was completed at in-person assessment centres and online. It is a test of executive function. Participants were presented with a set of letters and digits scattered across the screen and were asked to click on them in alphanumeric order (e.g., A-1-B-2-C…).
+### Online - 1 
+```{r}
+cog %>% count(p20157_i0)
+cog$Online1_TMTB_completed<- F
+cog$Online1_TMTB_completed[!is.na(cog$p20157_i0)]<- T
+cog %>% count(Online1_TMTB_completed)
+
+```
+### Online - 2 
+```{r}
+cog %>% count(p20157_i1)
+cog$Online2_TMTB_completed<- F
+cog$Online2_TMTB_completed[!is.na(cog$p20157_i1)]<- T
+cog %>% count(Online2_TMTB_completed)
+```
+
+## Fluid intelligence 
+This test was completed at in-person assessment centres and online. It is a test of reasoning. Participants were presented with 13 questions designed to measure their problem solving, logic, and reasoning capacity, independent of acquired knowledge. They were given 2 minutes to answer as many multiple-choice questions as possible (with a maximum of 13). The questions got progressively harder. 
+ 
+### Online - 1
+```{r}
+cog %>% count(p20191_i0)
+cog$Online1_FI_completed<- F
+cog$Online1_FI_completed[!is.na(cog$p20191_i0)]<- T
+cog %>% count(Online1_FI_completed)
+```
+
+### Online - 2
+```{r}
+cog %>% count(p20191_i1)
+cog$Online2_FI_completed<- F
+cog$Online2_FI_completed[!is.na(cog$p20191_i1)]<- T
+cog %>% count(Online2_FI_completed)
+```
+
+
+## Symbol digit substitution
+This test was completed at in-person assessment centres and online. It is a test of processing speed. Participants were presented with a key of symbols matched to numbers and asked to indicate which number matched each symbol in a grid. 
+
+### Online - 1
+```{r}
+cog %>% count(p20159_i0)
+cog$Online1_SDS_completed<- F
+cog$Online1_SDS_completed[!is.na(cog$p20159_i0)]<- T
+cog %>% count(Online1_SDS_completed)
+```
+
+### Online - 2
+```{r}
+cog %>% count(p20159_i1)
+cog$Online2_SDS_completed<- F
+cog$Online2_SDS_completed[!is.na(cog$p20159_i1)]<- T
+cog %>% count(Online2_SDS_completed)
+```
+## Matrix pattern completion
+### Online - 2 (only taken here)
+```{r}
+cog %>% count(p20760_i1)
+cog$Online2_MPC_completed<- F
+cog$Online2_MPC_completed[!is.na(cog$p20760_i1)]<- T
+cog %>% count(Online2_MPC_completed)
+```
+
+# Phenotypes reflecting cognitive ability
+## RT 
+Scores taken from baseline. This test was completed at in-person assessment centres and online. It is a test of processing speed. It is similar to a game of ‘snap’, played across 12 rounds. The participant was shown two cards and asked to press a button if they matched. Here, I select the mean time taken to press the button (UKBB field 20023) as the outcome measure. 
+```{r}
+cog %>% count(p20023_i0)
+
+a=subset(cog, (!is.na(cog$p20023_i0)))
+a=select(a, c("Sample_ID","p20023_i0"))
+a$Reaction_time_AC1_mean_time_taken<-as.numeric(a$p20023_i0)
+
+# Plot raw score
+tiff("RT_AC1_distribution.tiff", width = 12, height = 9, units = "in", res = 300)
+ggplot(a, aes(Reaction_time_AC1_mean_time_taken))+
+  geom_histogram(binwidth=20)+
+  labs(x='Reaction time (first assessment centre) mean time to \n correctly identify matches (ms)')
+dev.off()
+
+# Transform 
+a$Reaction_time_AC1_mean_time_taken_log = log(a$Reaction_time_AC1_mean_time_taken)
+
+tiff("RT_AC1_log_transformed_distribution.tiff", width = 12, height = 9, units = "in", res = 300)
+ggplot(a, aes(Reaction_time_AC1_mean_time_taken_log))+
+  geom_histogram(binwidth=0.05)+
+  labs(x='Reaction time (first assessment centre) mean time to \n correctly identify matches (ms) - log transformed')
+dev.off()
+
+# Form z score
+a$Reaction_time_AC1_mean_time_taken_Zscore=((a$Reaction_time_AC1_mean_time_taken_log
+                                                    -mean(a$Reaction_time_AC1_mean_time_taken_log))
+                                                   /sd(a$Reaction_time_AC1_mean_time_taken_log, na.rm = T))
+
+
+# Remove outliers (+/- 4SDs of mean)
+b=subset(a, a$Reaction_time_AC1_mean_time_taken_Zscore<4 & a$Reaction_time_AC1_mean_time_taken_Zscore>-4)
+b$Reaction_time_AC1_mean_time_taken_Zscore_outliersrm<-b$Reaction_time_AC1_mean_time_taken_Zscore
+b<-select(b, "Sample_ID", "Reaction_time_AC1_mean_time_taken_Zscore_outliersrm")
+a=merge(a, b, by='Sample_ID', all=T)
+
+
+# Recode outliers(+/-4SDs of mean)
+a$Reaction_time_AC1_mean_time_taken_Zscore_outliersrecoded<-a$Reaction_time_AC1_mean_time_taken_Zscore
+a$Reaction_time_AC1_mean_time_taken_Zscore_outliersrecoded[a$Reaction_time_AC1_mean_time_taken_Zscore > 4] <- 4
+a$Reaction_time_AC1_mean_time_taken_Zscore_outliersrecoded[a$Reaction_time_AC1_mean_time_taken_Zscore < -4] <- -4
+
+a=select(a, c(1,3:7))
+cog = merge(cog, a, by='Sample_ID', all = TRUE)
+
+# Plot z score 
+tiff("RT_AC1_Zscore_distribution.tiff", width = 12, height = 9, units = "in", res = 300)
+ggplot(cog, aes(Reaction_time_AC1_mean_time_taken_Zscore_outliersrm))+
+  geom_histogram(binwidth=0.3)+
+  labs(x='Reaction time (first assessment centre) mean time to \n correctly identify matches - Z score')
+dev.off()
+```
+### Save plots out
+```{r}
+system('dx upload RT*.tiff --destination ./phenotype_cohorts/processed_cognition/')
+```
+
+## FI 
+This test was completed at in-person assessment centres and online. It is a test of reasoning. Participants were presented with 13 questions designed to measure their problem solving, logic, and reasoning capacity, independent of acquired knowledge. They were given 2 minutes to answer as many multiple-choice questions as possible (with a maximum of 13). The questions got progressively harder. 
+Here, the number of correct answers given (UKBB field 20016 and 20191) both in person and online as outcome measures.
+
+## First assessment centre
+```{r}
+cog %>% count(p20016_i0)
+
+a=subset(cog, !is.na(cog$p20016_i0))
+a=select(a, c("Sample_ID","p20016_i0"))
+a$FI_AC1_n_correct_answers<-as.numeric(a$p20016_i0)
+
+# Plot raw score
+tiff("FI_AC1_distribution.tiff", width = 12, height = 9, units = "in", res = 300)
+ggplot(a, aes(FI_AC1_n_correct_answers))+
+  geom_histogram(binwidth=1)+
+  labs(x='FI (first assessment centre) n correct answers')
+dev.off()
+
+
+
+# Form z score
+a$FI_AC1_n_correct_answers_Zscore=((a$FI_AC1_n_correct_answers
+                                                    -mean(a$FI_AC1_n_correct_answers))
+                                                   /sd(a$FI_AC1_n_correct_answers, na.rm = T))
+mean(a$FI_AC1_n_correct_answers_Zscore)
+max(a$FI_AC1_n_correct_answers_Zscore)
+min(a$FI_AC1_n_correct_answers_Zscore)
+
+# No outlier removal needed
+
+a=select(a, c(1,3:4))
+cog = merge(cog, a, by='Sample_ID', all = TRUE)
+
+
+# Plot z score 
+tiff("FI_AC1_Zscore_distribution.tiff", width = 12, height = 9, units = "in", res = 300)
+ggplot(cog, aes(FI_AC1_n_correct_answers_Zscore))+
+  geom_histogram(binwidth=0.5)+
+  labs(x='FI (first assessment centre) n correct answers - Z score')
+dev.off()
+```
+
+
+
+## Second assessment centre
+```{r}
+cog %>% count(p20016_i1)
+
+a=subset(cog, !is.na(cog$p20016_i1))
+a=select(a, c("Sample_ID","p20016_i1"))
+a$FI_AC2_n_correct_answers<-as.numeric(a$p20016_i1)
+
+# Plot raw score
+tiff("FI_AC2_distribution.tiff", width = 12, height = 9, units = "in", res = 300)
+ggplot(a, aes(FI_AC2_n_correct_answers))+
+  geom_histogram(binwidth=1)+
+  labs(x='FI (second assessment centre) n correct answers')
+dev.off()
+
+
+
+# Form z score
+a$FI_AC2_n_correct_answers_Zscore=((a$FI_AC2_n_correct_answers
+                                                    -mean(a$FI_AC2_n_correct_answers))
+                                                   /sd(a$FI_AC2_n_correct_answers, na.rm = T))
+mean(a$FI_AC2_n_correct_answers_Zscore)
+max(a$FI_AC2_n_correct_answers_Zscore)
+min(a$FI_AC2_n_correct_answers_Zscore)
+
+# No outlier removal needed
+
+
+a=select(a, c(1,3:4))
+cog = merge(cog, a, by='Sample_ID', all = TRUE)
+
+
+# Plot z score 
+tiff("FI_AC2_Zscore_distribution.tiff", width = 12, height = 9, units = "in", res = 300)
+ggplot(cog, aes(FI_AC2_n_correct_answers_Zscore))+
+  geom_histogram(binwidth=0.9)+
+  labs(x='FI (second assessment centre) n correct answers - Z score')
+dev.off()
+```
+
+## Third assessment centre
+```{r}
+cog %>% count(p20016_i2)
+
+a=subset(cog, !is.na(cog$p20016_i2))
+a=select(a, c("Sample_ID","p20016_i2"))
+a$FI_AC3_n_correct_answers<-as.numeric(a$p20016_i2)
+
+# Plot raw score
+tiff("FI_AC3_distribution.tiff", width = 12, height = 9, units = "in", res = 300)
+ggplot(a, aes(FI_AC3_n_correct_answers))+
+  geom_histogram(binwidth=1)+
+  labs(x='FI (third assessment centre) n correct answers')
+dev.off()
+
+
+
+# Form z score
+a$FI_AC3_n_correct_answers_Zscore=((a$FI_AC3_n_correct_answers
+                                                    -mean(a$FI_AC3_n_correct_answers))
+                                                   /sd(a$FI_AC3_n_correct_answers, na.rm = T))
+mean(a$FI_AC3_n_correct_answers_Zscore)
+max(a$FI_AC3_n_correct_answers_Zscore)
+min(a$FI_AC3_n_correct_answers_Zscore)
+
+# No outlier removal needed
+
+
+a=select(a, c(1,3:4))
+cog = merge(cog, a, by='Sample_ID', all = TRUE)
+
+
+# Plot z score 
+tiff("FI_AC3_Zscore_distribution.tiff", width = 12, height = 9, units = "in", res = 300)
+ggplot(cog, aes(FI_AC3_n_correct_answers_Zscore))+
+  geom_histogram(binwidth=0.9)+
+  labs(x='FI (third assessment centre) n correct answers - Z score')
+dev.off()
+```
+
+## Fourth assessment centre
+```{r}
+cog %>% count(p20016_i3)
+
+a=subset(cog, !is.na(cog$p20016_i3))
+a=select(a, c("Sample_ID","p20016_i3"))
+a$FI_AC4_n_correct_answers<-as.numeric(a$p20016_i3)
+
+# Plot raw score
+tiff("FI_AC4_distribution.tiff", width = 12, height = 9, units = "in", res = 300)
+ggplot(a, aes(FI_AC4_n_correct_answers))+
+  geom_histogram(binwidth=1)+
+  labs(x='FI (fourth assessment centre) n correct answers')
+dev.off()
+
+
+
+# Form z score
+a$FI_AC4_n_correct_answers_Zscore=((a$FI_AC4_n_correct_answers
+                                                    -mean(a$FI_AC4_n_correct_answers))
+                                                   /sd(a$FI_AC4_n_correct_answers, na.rm = T))
+mean(a$FI_AC4_n_correct_answers_Zscore)
+max(a$FI_AC4_n_correct_answers_Zscore)
+min(a$FI_AC4_n_correct_answers_Zscore)
+
+# No outlier removal needed
+
+
+a=select(a, c(1,3:4))
+cog = merge(cog, a, by='Sample_ID', all = TRUE)
+
+
+# Plot z score 
+tiff("FI_AC4_Zscore_distribution.tiff", width = 12, height = 9, units = "in", res = 300)
+ggplot(cog, aes(FI_AC4_n_correct_answers_Zscore))+
+  geom_histogram(binwidth=0.5)+
+  labs(x='FI (fourth assessment centre) n correct answers - Z score')
+dev.off()
+
+```
+
+## Online - 1
+```{r}
+cog %>% count(p20191_i0)
+
+
+a=subset(cog, !is.na(cog$p20191_i0))
+
+a=select(a, c("Sample_ID","p20191_i0"))
+# Select first time, so if someone completed in 2014 instance (i0) take this. If not, take 2017 instance (i1)
+a$FI_online1_n_correct_answers <- a$p20191_i0
+         
+
+
+
+
+# Plot raw score
+tiff("FI_online1_distribution.tiff", width = 12, height = 9, units = "in", res = 300)
+ggplot(a, aes(FI_online1_n_correct_answers))+
+  geom_histogram(binwidth=1)+
+  labs(x='FI (online 1) n correct answers')
+dev.off()
+
+
+
+# Form z score
+a$FI_online1_n_correct_answers_Zscore=((a$FI_online1_n_correct_answers
+                                                    -mean(a$FI_online1_n_correct_answers))
+                                                   /sd(a$FI_online1_n_correct_answers, na.rm = T))
+mean(a$FI_online1_n_correct_answers_Zscore)
+max(a$FI_online1_n_correct_answers_Zscore)
+min(a$FI_online1_n_correct_answers_Zscore)
+
+
+a=select(a, c(1,3,4))
+cog = merge(cog, a, by='Sample_ID', all = TRUE)
+
+
+# Plot z score 
+tiff("FI_online1_Zscore_distribution.tiff", width = 12, height = 9, units = "in", res = 300)
+ggplot(cog, aes(FI_online1_n_correct_answers_Zscore))+
+  geom_histogram(binwidth=0.6)+
+  labs(x='FI (online 1) n correct answers - Z score')
+dev.off()
+
+```
+
+
+## Online - 2
+```{r}
+cog %>% count(p20191_i1)
+
+
+a=subset(cog, !is.na(cog$p20191_i1))
+
+a=select(a, c("Sample_ID","p20191_i1"))
+a$FI_online2_n_correct_answers <- a$p20191_i1
+         
+
+
+
+
+# Plot raw score
+tiff("FI_online2_distribution.tiff", width = 12, height = 9, units = "in", res = 300)
+ggplot(a, aes(FI_online2_n_correct_answers))+
+  geom_histogram(binwidth=1)+
+  labs(x='FI (online 2) n correct answers')
+dev.off()
+
+
+
+# Form z score
+a$FI_online2_n_correct_answers_Zscore=((a$FI_online2_n_correct_answers
+                                                    -mean(a$FI_online2_n_correct_answers))
+                                                   /sd(a$FI_online2_n_correct_answers, na.rm = T))
+mean(a$FI_online2_n_correct_answers_Zscore)
+max(a$FI_online2_n_correct_answers_Zscore)
+min(a$FI_online2_n_correct_answers_Zscore)
+
+
+a=select(a, c(1,3,4))
+cog = merge(cog, a, by='Sample_ID', all = TRUE)
+
+
+
+
+# Plot z score 
+tiff("FI_online2_Zscore_distribution.tiff", width = 12, height = 9, units = "in", res = 300)
+ggplot(cog, aes(FI_online2_n_correct_answers_Zscore))+
+  geom_histogram(binwidth=0.6)+
+  labs(x='FI (online 2) n correct answers - Z score')
+dev.off()
+
+```
+
+## Save plots (and table) out
+```{r}
+system('dx upload FI*.tiff --destination ./phenotype_cohorts/processed_cognition/')
+write.csv(cog, 'participation_cognition.csv')
+system('dx upload participation_cognition.csv --destination ./phenotype_cohorts/processed_cognition/')
+```
+
+# Merge and derive more complex participation phenotypes 
+```{r}
+system('dx download ./phenotype_cohorts/participation_diagnoses_participant.csv')
+phen=read.csv('participation_diagnoses_participant.csv')
+system('dx download ./phenotype_cohorts/processed_cognition/participation_cognition.csv')
+cog=read.csv('participation_cognition.csv')
+phen=merge(phen, cog, by='eid')
+
+```
+
+# Participation phenotypes
+## Death
+```{r}
+phen$date_of_death<-phen$p40000_i0
+phen$date_of_death[phen$date_of_death==""]<-NA
+phen$dead[is.na(phen$date_of_death)]<-F
+phen$dead[!is.na(phen$date_of_death)]<-T
+phen %>% count(dead)
+```
+
+## Email access 
+```{r}
+phen %>% count(p20005)
+phen$email_access<-F
+phen$email_access[phen$p20005=='Current, email address assumed working']<-T
+phen %>% count(email_access) 
+```
+
+## Willing to attempt cognitive tests at baseline 
+```{r}
+phen %>% count(p62_i0)
+phen$willing_to_attempt_cog_tests_at_baseline[phen$p62_i0=='Begin games']<-T
+phen$willing_to_attempt_cog_tests_at_baseline[phen$p62_i0=='I am unable to try this']<-F
+
+phen %>% count(willing_to_attempt_cog_tests_at_baseline) 
+```
+
+
+## Only interacted with UKBB at baseline
+```{r}
+# number of contacts 
+phen$number_of_contacts_with_UKBB<-phen$p20145
+phen %>% count(number_of_contacts_with_UKBB)
+
+# Only contact at baseline 
+phen$only_contact_with_UKBB_at_baseline_assessment[phen$number_of_contacts_with_UKBB==1]<-T
+phen$only_contact_with_UKBB_at_baseline_assessment[phen$number_of_contacts_with_UKBB>1]<-F
+phen %>% count(only_contact_with_UKBB_at_baseline_assessment) 
+
+# Only contact at baseline considering death (removing all people who have died since baseline)
+phen$only_contact_with_UKBB_at_baseline_assessment_dead_removed<-phen$only_contact_with_UKBB_at_baseline_assessment
+phen$only_contact_with_UKBB_at_baseline_assessment_dead_removed[phen$dead==T]<-NA
+phen%>% count(only_contact_with_UKBB_at_baseline_assessment_dead_removed)
+
+# Only contact at baseline considering death and email access
+phen$only_contact_with_UKBB_at_baseline_assessment_dead_removed_noemail_removed<-phen$only_contact_with_UKBB_at_baseline_assessment_dead_removed
+phen$only_contact_with_UKBB_at_baseline_assessment_dead_removed_noemail_removed[phen$email_access==F]<-NA
+```
+
+## Online cognitive function tests
+### Invitations 
+First round (2014)
+```{r}
+phen$date_invited_to_online_cog_1 <- phen$p22017_i0
+phen$date_invited_to_online_cog_1[phen$date_invited_to_online_cog_1==""]<-NA
+phen$invited_to_online_cog_1[is.na(phen$date_invited_to_online_cog_1)]<-FALSE
+phen$invited_to_online_cog_1[!is.na(phen$date_invited_to_online_cog_1)]<-TRUE 
+phen %>% count(invited_to_online_cog_1)
+```
+Second round (2021/2022)
+```{r}
+phen$date_invited_to_online_cog_2 <- phen$p22017_i1
+phen$date_invited_to_online_cog_2[phen$date_invited_to_online_cog_2==""]<-NA
+phen$invited_to_online_cog_2[is.na(phen$date_invited_to_online_cog_2)]<-FALSE
+phen$invited_to_online_cog_2[!is.na(phen$date_invited_to_online_cog_2)]<-TRUE 
+phen %>% count(invited_to_online_cog_2) 
+```
+Both
+```{r}
+phen$invited_to_both_online_cog<- F
+phen$invited_to_both_online_cog[phen$invited_to_online_cog_1==T &
+                                  phen$invited_to_online_cog_2==T] <- T
+phen %>% count(invited_to_both_online_cog)
+
+```
+#### Invitations and dates of death 
+Tried to remove people whose 'date lost to follow-up' was before invitation to certain things, but some of them continued to participate after what UKBB classes as 'loss to follow-up', so now only considering death. 
+```{r}
+phen$date_of_death <- as.Date(phen$date_of_death)
+a = subset(phen, !is.na(phen$date_of_death))
+phen$date_invited_to_online_cog_1 <- as.Date(phen$date_invited_to_online_cog_1)
+a = subset(phen, !is.na(phen$date_invited_to_online_cog_1))
+phen$date_invited_to_online_cog_2 <- as.Date(phen$date_invited_to_online_cog_2)
+a = subset(phen, !is.na(phen$date_invited_to_online_cog_2))
+
+phen$death_before_online_cog_1 <- phen$date_of_death < phen$date_invited_to_online_cog_1
+phen$death_before_online_cog_2 <- phen$date_of_death < phen$date_invited_to_online_cog_2
+
+phen %>% count(death_before_online_cog_1)
+phen %>% count(death_before_online_cog_2) 
+```
+Death before both
+```{r}
+phen$death_before_both_online_cog <- F
+phen$death_before_both_online_cog[phen$death_before_online_cog_1== T |
+                                    phen$death_before_online_cog_2 == T] <- T
+phen %>% count(death_before_both_online_cog)
+```
+Invited and alive for both 
+```{r}
+phen$invited_and_alive_both_online_cog <- F
+phen$invited_and_alive_both_online_cog[phen$invited_to_both_online_cog==T &
+                                         phen$death_before_both_online_cog==F]<- T
+phen %>% count(invited_and_alive_both_online_cog)
+```
+### Completed any online cog test
+#### First round (2014)
+This battery included FI, TMTA&B, SDS, PM, and NM 
+```{r}
+phen$completed_any_test_online_cog_1<-F
+phen$completed_any_test_online_cog_1[(phen$Online1_FI_completed == T) | 
+                                       (phen$Online1_Numeric_memory_completed == T) | 
+                                       (phen$Online1_Pairs_matching_completed == T) |
+                                       (phen$Online1_SDS_completed == T) | 
+                                       (phen$Online1_TMTA_completed == T) |
+                                       (phen$Online1_TMTB_completed == T)]<- T
+phen %>% count(completed_any_test_online_cog_1)
+
+# Considering invitation
+phen$completed_any_test_online_cog_1_considering_invitation[phen$completed_any_test_online_cog_1==T]<-T
+phen$completed_any_test_online_cog_1_considering_invitation[(phen$invited_to_online_cog_1 == T) &
+                                                              (phen$completed_any_test_online_cog_1 == F)]<-F
+phen %>% count(completed_any_test_online_cog_1_considering_invitation)
+
+# Considering invitation and death 
+phen$completed_any_test_online_cog_1_considering_invitation_and_death<-phen$completed_any_test_online_cog_1_considering_invitation
+phen$completed_any_test_online_cog_1_considering_invitation_and_death[phen$death_before_online_cog_1 == T]<-NA
+phen %>% count(completed_any_test_online_cog_1_considering_invitation_and_death)
+phen %>% count(completed_any_test_online_cog_1_considering_invitation)
+```
+
+#### Second round (2022)
+This battery included FI, TMTA&B, SDS, MPC
+```{r}
+phen$completed_any_test_online_cog_2<-F
+phen$completed_any_test_online_cog_2[(phen$Online2_FI_completed == T) | 
+                                       (phen$Online2_MPC_completed == T) | 
+                                       (phen$Online2_SDS_completed == T) |
+                                       (phen$Online2_TMTA_completed == T) | 
+                                       (phen$Online2_TMTB_completed == T)]<- T
+phen %>% count(completed_any_test_online_cog_2)
+
+# Considering invitation
+phen$completed_any_test_online_cog_2_considering_invitation[phen$completed_any_test_online_cog_2==T]<-T
+phen$completed_any_test_online_cog_2_considering_invitation[phen$invited_to_online_cog_2==T&
+                                                              phen$completed_any_test_online_cog_2==F]<-F
+phen %>% count(completed_any_test_online_cog_2_considering_invitation)
+
+# Considering invitiation and death 
+phen$completed_any_test_online_cog_2_considering_invitation_and_death<-phen$completed_any_test_online_cog_2_considering_invitation
+phen$completed_any_test_online_cog_2_considering_invitation_and_death[phen$death_before_online_cog_2==T]<-NA
+phen %>% count(completed_any_test_online_cog_2_considering_invitation_and_death)
+phen %>% count(completed_any_test_online_cog_2_considering_invitation)
+
+```
+
+#### Online 1 and 2 together 
+```{r}
+phen$completed_any_test_online_cog_either<-F
+phen$completed_any_test_online_cog_either[phen$completed_any_test_online_cog_1==T |
+                                            phen$completed_any_test_online_cog_2==T]<-T
+phen %>% count(completed_any_test_online_cog_either)
+
+# Considering invitation and death
+
+phen$completed_any_test_online_cog_either_considering_invitation_and_death[
+    phen$completed_any_test_online_cog_1_considering_invitation_and_death==F &
+    phen$completed_any_test_online_cog_2_considering_invitation_and_death==F]<-F
+phen$completed_any_test_online_cog_either_considering_invitation_and_death[
+  phen$invited_and_alive_both_online_cog==F]<-NA
+phen$completed_any_test_online_cog_either_considering_invitation_and_death[
+    phen$completed_any_test_online_cog_1_considering_invitation_and_death==T |
+    phen$completed_any_test_online_cog_2_considering_invitation_and_death==T]<-T
+
+phen %>% count(completed_any_test_online_cog_either_considering_invitation_and_death)
+
+
+```
+### Completed all online cog test
+#### First round (2014)
+This battery included FI, TMTA&B, SDS, PM, and NM 
+```{r}
+phen$completed_all_test_online_cog_1<-F
+phen$completed_all_test_online_cog_1[(phen$Online1_FI_completed == T) &
+                                       (phen$Online1_Numeric_memory_completed == T) &
+                                       (phen$Online1_Pairs_matching_completed == T) &
+                                       (phen$Online1_SDS_completed == T) &
+                                       (phen$Online1_TMTA_completed == T) &
+                                       (phen$Online1_TMTB_completed == T)]<- T
+phen %>% count(completed_all_test_online_cog_1)
+
+# Considering invitation
+phen$completed_all_test_online_cog_1_considering_invitation[phen$completed_all_test_online_cog_1==T]<-T
+phen$completed_all_test_online_cog_1_considering_invitation[(phen$invited_to_online_cog_1 == T) &
+                                                              (phen$completed_all_test_online_cog_1 == F)]<-F
+phen %>% count(completed_all_test_online_cog_1_considering_invitation)
+
+# Considering invitation and death 
+phen$completed_all_test_online_cog_1_considering_invitation_and_death<-phen$completed_all_test_online_cog_1_considering_invitation
+phen$completed_all_test_online_cog_1_considering_invitation_and_death[phen$death_before_online_cog_1 == T]<-NA
+phen %>% count(completed_all_test_online_cog_1_considering_invitation_and_death)
+```
+
+#### Second round (2022)
+This battery included FI, TMTA&B, SDS, MPC
+```{r}
+phen$completed_all_test_online_cog_2<-F
+phen$completed_all_test_online_cog_2[(phen$Online2_FI_completed == T) &
+                                       (phen$Online2_MPC_completed == T) &
+                                       (phen$Online2_SDS_completed == T) &
+                                       (phen$Online2_TMTA_completed == T) & 
+                                       (phen$Online2_TMTB_completed == T)]<- T
+phen %>% count(completed_all_test_online_cog_2)
+
+# Considering invitation
+phen$completed_all_test_online_cog_2_considering_invitation[phen$completed_all_test_online_cog_2==T]<-T
+phen$completed_all_test_online_cog_2_considering_invitation[phen$invited_to_online_cog_2==T&
+                                                              phen$completed_all_test_online_cog_2==F]<-F
+phen %>% count(completed_all_test_online_cog_2_considering_invitation)
+
+# Considering invitiation and death 
+phen$completed_all_test_online_cog_2_considering_invitation_and_death<-phen$completed_all_test_online_cog_2_considering_invitation
+phen$completed_all_test_online_cog_2_considering_invitation_and_death[phen$death_before_online_cog_2==T]<-NA
+phen %>% count(completed_all_test_online_cog_2_considering_invitation_and_death)
+
+```
+
+#### Online 1 and 2 together 
+```{r}
+phen$completed_all_test_online_cog_both<-F
+phen$completed_all_test_online_cog_both[phen$completed_all_test_online_cog_1==T &
+                                            phen$completed_all_test_online_cog_2==T]<-T
+phen %>% count(completed_all_test_online_cog_both)
+
+# Considering invitation and death
+phen$completed_all_test_online_cog_either_considering_invitation_and_death[
+    phen$completed_all_test_online_cog_1_considering_invitation_and_death==F |
+    phen$completed_all_test_online_cog_2_considering_invitation_and_death==F]<-F
+phen$completed_all_test_online_cog_either_considering_invitation_and_death[
+  phen$invited_and_alive_both_online_cog==F]<-NA
+phen$completed_all_test_online_cog_either_considering_invitation_and_death[
+    phen$completed_all_test_online_cog_1_considering_invitation_and_death==T &
+    phen$completed_all_test_online_cog_2_considering_invitation_and_death==T]<-T
+phen %>% count(completed_all_test_online_cog_either_considering_invitation_and_death)
+
+
+```
+
+## Save out
+```{r}
+write.csv(phen, 'phenotypes_cog_diagnoses_participation_7AUG25.csv')
+system('dx upload phenotypes_cog_diagnoses_participation_7AUG25.csv')
+```
+
+
+# Diagnoses for sensitivity analyses
+Broad 'neuropsychiatric disorder' phenotype, spanning ICD10 codes F20-29, F70-79, F84, and G40-41
+## Read in data 
+```{r}
+system('dx download ./CACNA1C/data_participant.csv')
+original_phenotypes=read.csv('data_participant.csv')
+all_phen=merge(phen, original_phenotypes, by='eid')
+```
+
+F20s - SZ and related disorders
+## F20 - SZ
+```{r}
+all_phen %>% count(p130874)
+all_phen$F20_record <- F
+all_phen$F20_record[all_phen$p130874!=""]<-T
+all_phen %>% count(F20_record)
+```
+
+## F21 - schizoptypal
+```{r}
+all_phen %>% count(p130876)
+all_phen$F21_record <- F
+all_phen$F21_record[all_phen$p130876!=""]<-T
+all_phen %>% count(F21_record)
+```
+## F22 - persistant delusional
+```{r}
+all_phen %>% count(p130878)
+all_phen$F22_record <- F
+all_phen$F22_record[all_phen$p130878!=""]<-T
+all_phen %>% count(F22_record)
+```
+
+## F23 - psychotic disorders
+```{r}
+all_phen %>% count(p130880)
+all_phen$F23_record <- F
+all_phen$F23_record[all_phen$p130880!=""]<-T
+all_phen %>% count(F23_record)
+```
+
+## F24 - induced delusional disorder
+```{r}
+all_phen %>% count(p130882)
+all_phen$F24_record <- F
+all_phen$F24_record[all_phen$p130882!=""]<-T
+all_phen %>% count(F24_record)
+```
+
+## F25 - schizoaffective disorders
+```{r}
+all_phen %>% count(p130884)
+all_phen$F25_record <- F
+all_phen$F25_record[all_phen$p130884!=""]<-T
+all_phen %>% count(F25_record)
+```
+
+## F28 - other non-organic psychosis
+```{r}
+all_phen %>% count(p130886)
+all_phen$F28_record <- F
+all_phen$F28_record[all_phen$p130886!=""]<-T
+all_phen %>% count(F28_record)
+```
+## F29 - unspecified non-organic psychosis
+```{r}
+all_phen %>% count(p130888)
+all_phen$F29_record <- F
+all_phen$F29_record[all_phen$p130888!=""]<-T
+all_phen %>% count(F29_record)
+```
+
+## F20s summary
+```{r}
+all_phen$F20s_summary = F
+all_phen$F20s_summary[
+    all_phen$F20_record==T |
+    all_phen$F21_record==T |
+    all_phen$F22_record==T | 
+    all_phen$F23_record==T | 
+    all_phen$F24_record==T |
+    all_phen$F25_record==T |
+    all_phen$F28_record==T | 
+    all_phen$F29_record==T] <- T
+all_phen %>% count(F20s_summary)
+```
+F70s - Intellectual disabilities
+## F70 - mild mental retardation
+```{r}
+all_phen %>% count(p130950)
+all_phen$F70_record <- F
+all_phen$F70_record[all_phen$p130950!=""]<-T
+all_phen %>% count(F70_record)
+```
+
+## F71 - moderate mental retardation
+```{r}
+all_phen %>% count(p130952)
+all_phen$F71_record <- F
+all_phen$F71_record[all_phen$p130952!=""]<-T
+all_phen %>% count(F71_record)
+```
+## F72 - severe mental retardation 
+```{r}
+all_phen %>% count(p130954)
+all_phen$F72_record <- F
+all_phen$F72_record[all_phen$p130954!=""]<-T
+all_phen %>% count(F72_record)
+```
+
+## F73 - profound mental retardation 
+
+
+## F78 - other mental retardation
+```{r}
+all_phen %>% count(p130958)
+all_phen$F78_record <- F
+all_phen$F78_record[all_phen$p130958!=""]<-T
+all_phen %>% count(F78_record)
+```
+
+## F79 - unspecified mental retardation
+```{r}
+all_phen %>% count(p130960)
+all_phen$F79_record <- F
+all_phen$F79_record[all_phen$p130960!=""]<-T
+all_phen %>% count(F79_record)
+```
+## F70s summary
+```{r}
+all_phen$F70s_summary = F
+all_phen$F70s_summary[
+    all_phen$F70_record==T |
+    all_phen$F71_record==T |
+    all_phen$F72_record==T | 
+    all_phen$F78_record==T | 
+    all_phen$F79_record==T] <- T
+all_phen %>% count(F70s_summary)
+```
+
+## F84 - pervasive developmental disorders 
+```{r} 
+all_phen %>% count(p130971)
+all_phen$F84_record <-F
+all_phen$F84_record[all_phen$p130971!='']<-T
+all_phen %>% count(F84_record)
+```
+G40s - EPILEPSY AND RELATED DISORDERS
+## G40 - EPILEPSY
+```{r}
+all_phen %>% count(p131048)
+all_phen$G40_record <- F
+all_phen$G40_record[all_phen$p131048!=""]<-T
+all_phen %>% count(G40_record)
+```
+
+## G41 - STATUS EPILEPTICUS
+```{r}
+all_phen %>% count(p131050)
+all_phen$G41_record <- F
+all_phen$G41_record[all_phen$p131050!=""]<-T
+all_phen %>% count(G41_record)
+```
+
+## Summary NPD field 
+```{r}
+all_phen$NPD_summary = F
+all_phen$NPD_summary[
+    all_phen$F20s_summary==TRUE |
+    all_phen$F70s_summary==TRUE |
+    all_phen$F84_record==TRUE |
+    all_phen$G40_record==TRUE |
+    all_phen$G41_record==TRUE] <- TRUE
+all_phen %>% count(NPD_summary)
+
+```
+
+# Save out
+```{r}
+colnames(all_phen)
+phen=all_phen[,c(1, 97:157, 239:257)]
+write.csv(phen, 'phenotypes_all_cleaned_7AUG25.csv')
+system('dx upload phenotypes_all_cleaned_7AUG25.csv')
+```
+
+# Reweighting 
+```{r}
+system('dx download ./phenotypes_all_cleaned_7AUG25.csv')
+phen=read.csv('phenotypes_all_cleaned_7AUG25.csv')
+
+system('dx download participation_bias/reweighting.csv')
+weighting_phens=read.csv('reweighting.csv')
+weighting_phens$housing_tenure = weighting_phens$p680_i0
+weighting_phens$country_of_birth = weighting_phens$p1647_i0
+weighting_phens$TDI = weighting_phens$p22189
+weighting_phens$self_rep_ethnic_background = weighting_phens$p21000_i0
+weighting_phens$breastfed_as_baby = weighting_phens$p1677_i0
+
+weighting_phens=weighting_phens[,c(1, 10:14)]
+
+phen=merge(phen, weighting_phens, by = 'eid')
+write.csv(phen, 'phenotypes_all_cleaned_inc_reweighting.csv')
+system('dx upload phenotypes_all_cleaned_inc_reweighting.csv --destination participation_bias/')
+```
+

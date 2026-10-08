@@ -1,0 +1,68 @@
+---
+title: "15_defining_gene_sets"
+output: html_document
+date: "2025-01-27"
+---
+# Defining gene sets
+This script uses data from different publications to define different gene sets. It was run locally and outputs were then uploaded to the RAP. 
+
+Most gene sets (e.g. exome-wide and pLI ≥ 0.9 genes) were already defined in stage 13 of the WES repository (https://github.com/eilidhfenner/UKBB_RAP_WES), and counted in stage 14 there. This script adds the extra set needed for the participation bias work. First, monogenic developmental disorder genes are taken from DDG2P, keeping only confident (green) genes with a monoallelic mode of inheritance. These are then combined with SCHEMA (FDR 5%) genes and credible causal schizophrenia GWAS genes to make one broad neuropsychiatric disorder (NPD) gene set. The output (`ppt_bias_sets.csv`) is uploaded to the RAP and used in stage 16.
+
+# Load packages you need
+```{r}
+library(dplyr)
+library(tidyr)
+```
+
+# Gene sets from g project
+`gene_sets_for_RAP_Feb25.csv` is written by stage 13 of the WES processing repository (https://github.com/eilidhfenner/UKBB_RAP_WES). Only a subset of those gene sets is used here.
+```{r}
+gene_sets=read.csv('gene_sets_for_RAP_Feb25.csv')
+```
+# DDG2P sets
+Downloaded v5.1 on 8thNov2024 from https://panelapp.genomicsengland.co.uk/panels/484/
+```{r}
+ddg2p=read.csv('DDG2P-2.csv', header=T)
+ddg2p$monoallelic_ddg2p_gene <- grepl("MONOALLELIC", ddg2p$Model_Of_Inheritance)
+ddg2p %>% count(monoallelic_ddg2p_gene) 
+# Used GEL_status (coded as 0, 1, or 3) to determine confidence in status. Selected only 3 (GREEN)
+ddg2p$ddg2p_green_gene<-F
+ddg2p$ddg2p_green_gene[ddg2p$GEL_Status==3]<-T
+ddg2p %>% count(ddg2p_green_gene)
+ddg2p$confident_monogenic_ddg2p_gene<-F
+ddg2p$confident_monogenic_ddg2p_gene[ddg2p$ddg2p_green_gene==T & ddg2p$monoallelic_ddg2p_gene==T]<-T
+ddg2p %>% count(confident_monogenic_ddg2p_gene)
+
+```
+
+# Broad neuropsych set
+Make multiple versions first and go from there
+Codes in names: 
+- SCH = schema FDR set
+- CCG = credible causal SZ GWAS genes 
+- DD = monogenic DD genes 
+
+
+```{r}
+sets=merge(gene_sets, ddg2p, by.x='gene_id', by.y='EnsemblId.GRch38.', all=T)
+ddg2p_count=subset(sets, sets$confident_monogenic_ddg2p_gene==T)
+ddg2p_count=subset(ddg2p_count, is.na(ddg2p_count$chromosome))
+
+# Set based on just prev sig assocs with cognition?!!! 
+sets$NPD_set_SCH_CCG_DD<-F
+sets$NPD_set_SCH_CCG_DD[
+  sets$SCHEMA_FDR5_gene==T |
+  sets$SZ_GWAS_credible_causal==T |
+  sets$confident_monogenic_ddg2p_gene==T]<-T
+sets %>% count(NPD_set_SCH_CCG_DD)
+
+
+```
+
+# Write out
+```{r}
+write.csv(sets, 'ppt_bias_sets.csv')
+
+```
+
+Upload this to the RAP for use in downstream analyses!

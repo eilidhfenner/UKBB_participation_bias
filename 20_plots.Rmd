@@ -1,0 +1,424 @@
+---
+title: "20_plots"
+output: html_document
+date: "2024-10-18"
+---
+This script was run locally on the results downloaded from the RAP from stage 18.
+
+First, the phenotypes and variant classes are renamed so they read clearly in plots. The associations between variant burden and participation are then plotted, for the main analysis and each sensitivity analysis. Next, the script plots the effects of variant burden on cognition in people who did and didn't complete the online cognitive tests, with and without weighting.
+
+# Load libraries
+```{r}
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+y_title <- expression(paste("Beta of association with phenotype"))
+```
+# BURDEN 
+## Read in results 
+```{r}
+results=read.csv('results_burden_all.csv')
+
+```
+
+## Rename phenotypes 
+so they're clearer. Also annotate with main (cognitive), secondary (cognitive considering ...), and primary (death/broad measures).
+```{r}
+# Main (cognitive) outcomes 
+results$phen[results$dep_var=='willing_to_attempt_cog_tests_at_baseline']<-'Did not attempt \n baseline cognitive tests'
+results$nesting[results$dep_var=='willing_to_attempt_cog_tests_at_baseline']<-'Full sample'
+results$analysis[results$dep_var=='willing_to_attempt_cog_tests_at_baseline']<-'Main'
+results$phen[results$dep_var=='completed_any_test_online_cog_either']<-'Did not complete any \n online cognitive test'
+results$nesting[results$dep_var=='completed_any_test_online_cog_either']<-'Full sample'
+results$analysis[results$dep_var=='completed_any_test_online_cog_either']<-'Main'
+results$phen[results$dep_var=='completed_all_test_online_cog_both']<-'Did not complete all \n online cognitive tests'
+results$nesting[results$dep_var=='completed_all_test_online_cog_both']<-'Full sample'
+results$analysis[results$dep_var=='completed_all_test_online_cog_both']<-'Main'
+
+# Broad measures
+results$phen[results$dep_var=='lost_to_follow_up']<-'Lost to \n follow-up'
+results$nesting[results$dep_var=='lost_to_follow_up']<-'Full sample'
+results$analysis[results$dep_var=='lost_to_follow_up']<-'Broad measure'
+
+results$phen[results$dep_var=='no_email_access']<-'No email \n access'
+results$nesting[results$dep_var=='no_email_access']<-'Full sample'
+results$analysis[results$dep_var=='no_email_access']<-'Broad measure'
+
+results$phen[results$dep_var=='no_MHQ']<-'Did not complete \n online mental \n  health questionnaire'
+results$nesting[results$dep_var=='no_MHQ']<-'Full sample'
+results$analysis[results$dep_var=='no_MHQ']<-'Broad measure'
+
+# Order based on participation rates 
+results$phen <- factor(results$phen, 
+                       levels = c('Did not complete all \n online cognitive tests',
+                                  'Did not complete any \n online cognitive test',
+                                  'Did not attempt \n baseline cognitive tests',
+                                  'Did not complete \n online mental \n  health questionnaire',
+                                  'No email \n access',
+                                  'Lost to \n follow-up'))
+results=subset(results, !is.na(results$phen))
+results=subset(results, !is.na(results$nesting))
+
+```
+
+## Rename var types AND sets
+```{r}
+# Drop first col
+results <- results %>% select(-1)
+
+# Relabel var classes
+results <- results %>%
+  mutate(ann = case_when(
+    grepl("PTV_plus_REVEL", indep_var) ~ "Damaging rare coding variants",
+    grepl("synon", indep_var) ~ "Synonymous rare coding variants",
+    grepl("CNV", indep_var) ~ "Rare NPD-associated CNVs",
+    TRUE ~ NA_character_
+  )) %>%
+  mutate(ann = factor(ann, levels = c("Rare NPD-associated CNVs", "Damaging rare coding variants", "Synonymous rare coding variants")))
+
+# Relabel variant types with gene sets too (for major gene sets)
+results$variant_class[results$ann=="Rare NPD-associated CNVs"] <- "Rare NPD- \n associated CNVs"
+results$variant_class[results$ann=="Damaging rare coding variants" &
+                        results$gene_set=='pLI_0.9'] <- "Damaging RCVs in \n LoFi genes"
+results$variant_class[results$ann=="Synonymous rare coding variants" &
+                        results$gene_set=='pLI_0.9'] <- "Synonymous RCVs in \n LoFi genes"
+results$variant_class[results$ann=="Damaging rare coding variants" &
+                        results$gene_set=='NPD_set_SCH_CCG_DD'] <- "Damaging RCVs in \n NPD-associated genes"
+results$variant_class[results$ann=="Synonymous rare coding variants" &
+                        results$gene_set=='NPD_set_SCH_CCG_DD'] <- "Synonymous RCVs in \n NPD-associated genes"
+results$variant_class <- factor(results$variant_class, 
+                          levels = c("Rare NPD- \n associated CNVs",
+                                     "Synonymous RCVs in \n NPD-associated genes",
+                                     "Damaging RCVs in \n NPD-associated genes",
+                                     "Synonymous RCVs in \n LoFi genes",
+                                     "Damaging RCVs in \n LoFi genes"))
+
+results$Set[results$ann=="Rare NPD-associated CNVs"] <- "NPD-associated CNVs"
+results$Set[results$gene_set=='pLI_0.9'] <- "LoFi genes"
+results$Set[results$gene_set=='NPD_set_SCH_CCG_DD'] <- "NPD-associated genes"
+results$Set <- factor(results$Set, 
+                       levels = c("NPD-associated genes",
+                                  'LoFi genes',
+                                  "NPD-associated CNVs"))
+
+```
+
+## Plots 
+### 1KGP-EUR-like 
+```{r}
+gg=subset(results, (results$analysis=='Main'))
+gg=subset(gg, gg$ancestry=='EUR_only')
+gg=subset(gg,!is.na(gg$Set))
+# write table out here
+gg=subset(gg, gg$ann!='Synonymous rare coding variants')
+
+tiff("PARTICIPATION_burden_EU.tiff", units = "in", width = 16, height = 9, res = 400)
+ggplot(gg, aes(x = OR, y = phen, colour = variant_class)) +
+  geom_pointrange(aes(xmin = lower_CI_OR, xmax = upper_CI_OR), 
+                  position = position_dodge(width = 0.6), size = 2.5) +
+  geom_vline(xintercept = 1, linetype = "dotted") +
+  theme_light() +
+  theme(
+    text = element_text(size = 40),
+    legend.position = "bottom",
+    legend.title = element_blank(),     # Remove legend title
+    legend.text = element_text(size = 25))+
+  labs(x = 'Odds ratio \n', y = "Phenotype")
+dev.off()
+```
+
+### Broad measures
+```{r}
+gg=subset(results, (results$analysis=='Broad measure'))
+gg=subset(gg, gg$ancestry=='EUR_only')
+gg=subset(gg,!is.na(gg$Set))
+# write table out here
+gg=subset(gg, gg$ann!='Synonymous rare coding variants')
+
+tiff("PARTICIPATION_burden_EU_broad.tiff", units = "in", width = 16, height = 9, res = 400)
+ggplot(gg, aes(x = OR, y = phen, colour = variant_class)) +
+  geom_pointrange(aes(xmin = lower_CI_OR, xmax = upper_CI_OR), 
+                  position = position_dodge(width = 0.6), size = 2.5) +
+  geom_vline(xintercept = 1, linetype = "dotted") +
+  theme_light() +
+  theme(
+    text = element_text(size = 40),
+    legend.position = "bottom",
+    legend.title = element_blank(),     # Remove legend title
+    legend.text = element_text(size = 25))+
+  labs(x = 'Odds ratio \n', y = "Phenotype")
+dev.off()
+```
+
+### Considering invitation
+```{r}
+gg=subset(results, (results$analysis=='Main'))
+gg=subset(gg, gg$ancestry=='EUR_only' | 
+            gg$ancestry=='EUR_only_invitation_covar')
+gg=subset(gg,!is.na(gg$Set))
+gg=subset(gg, gg$dep_var!='willing_to_attempt_cog_tests_at_baseline')
+# write table out here
+gg=subset(gg, gg$ann!='Synonymous rare coding variants')
+gg$covariates[gg$ancestry=='EUR_only']<- 'Not covarying for invitation'
+gg$covariates[gg$ancestry=='EUR_only_invitation_covar']<- 'Covarying for invitation'
+gg$covariates <- factor(gg$covariates, 
+                       levels = c('Covarying for invitation',
+                                  'Not covarying for invitation'
+                                  ))
+
+tiff("PARTICIPATION_burden_EU_invitation_covar.tiff", units = "in", width = 16, height = 9, res = 400)
+ggplot(gg, aes(x = OR, y = phen, colour = variant_class, shape = covariates)) +
+  geom_pointrange(aes(xmin = lower_CI_OR, xmax = upper_CI_OR), 
+                  position = position_dodge(width = 0.8), size = 1.5) +
+  geom_vline(xintercept = 1, linetype = "dotted") +
+  scale_shape_manual(
+    values = c(
+      "Covarying for invitation" = 17,  # triangle
+      "Not covarying for invitation" = 16, # circle
+      "Covarying for neuropsychiatric \n disorder diagnoses" = 15 #square
+    )
+  ) +
+  theme_light() +
+  theme(
+    text = element_text(size = 40),
+    legend.position = "bottom",
+    legend.title = element_blank(),
+    legend.text = element_text(size = 20)
+  ) +
+  labs(x = 'Odds ratio \n', y = "Phenotype")
+dev.off()
+```
+
+### Considering NPDs
+```{r}
+gg=subset(results, (results$analysis=='Main'))
+gg=subset(gg, gg$ancestry=='EUR_only' |
+            gg$ancestry=='EUR_only_NPD_covar')
+gg=subset(gg,!is.na(gg$Set))
+# write table out here
+gg=subset(gg, gg$ann!='Synonymous rare coding variants')
+gg$covariates[gg$ancestry=='EUR_only']<- 'Not covarying for neuropsychiatric \n disorder diagnoses'
+gg$covariates[gg$ancestry=='EUR_only_NPD_covar']<- 'Covarying for neuropsychiatric \n disorder diagnoses'
+gg$covariates <- factor(gg$covariates, 
+                       levels = c('Covarying for neuropsychiatric \n disorder diagnoses',
+                                  'Not covarying for neuropsychiatric \n disorder diagnoses'
+                                  ))
+
+tiff("PARTICIPATION_burden_EU_NPD_covar.tiff", units = "in", width = 16, height = 9, res = 400)
+ggplot(gg, aes(x = OR, y = phen, colour = variant_class, shape = covariates)) +
+  geom_pointrange(aes(xmin = lower_CI_OR, xmax = upper_CI_OR), 
+                  position = position_dodge(width = 0.8), size = 1.5) +
+  geom_vline(xintercept = 1, linetype = "dotted") +
+  scale_shape_manual(
+    values = c(
+      'Not covarying for neuropsychiatric \n disorder diagnoses' = 16, # circle
+      "Covarying for neuropsychiatric \n disorder diagnoses" = 17 #square
+    )
+  ) +
+  theme_light() +
+  theme(
+    text = element_text(size = 40),
+    legend.position = "bottom",
+    legend.title = element_blank(),
+    legend.text = element_text(size = 10)
+  ) +
+  labs(x = 'Odds ratio \n', y = "Phenotype")
+dev.off()
+```
+
+### Covarying for cognition
+#### Show FI and RT in different tables as different sample sizes? 
+```{r}
+# RT
+gg=subset(results, (results$ancestry=='EUR_only_with_RT_RT_covars' | results$ancestry == 'EUR_only_with_RT_usual_covars' ))
+gg$Covariates[gg$ancestry=='EUR_only_with_RT_usual_covars']<- "Not covarying for cognitive ability"
+gg$Covariates[gg$ancestry=='EUR_only_with_RT_RT_covars']<- "Covarying for RT"
+gg=subset(gg,!is.na(gg$Set))
+gg=subset(gg, gg$analysis=='Main')
+gg=subset(gg, gg$ann!='Synonymous rare coding variants')
+gg$Covariates <- factor(gg$Covariates, 
+                       levels = c("Covarying for RT",
+                                  "Not covarying for cognitive ability"))
+
+tiff("PARTICIPATION_burden_RT_covariate.tiff", units = "in", width = 16, height = 9, res = 400)
+ggplot(gg, aes(x = OR, y = phen, colour = variant_class, shape = Covariates)) +
+  geom_pointrange(aes(xmin = lower_CI_OR, xmax = upper_CI_OR), 
+                  position = position_dodge(width = 0.9), size = 2.0) +
+  geom_vline(xintercept = 1, linetype = "dotted") +
+  theme_light() +
+  theme(
+    text = element_text(size = 40),
+    legend.position = "bottom",
+    legend.title = element_blank(),     # Remove legend title
+    legend.text = element_text(size =25))+
+  scale_shape_manual(
+    values = c(
+      "Covarying for RT" = 17,  # triangle
+      "Not covarying for cognitive ability" = 16 # circle
+    )) +
+  labs(x = 'Odds ratio \n', y = "Phenotype")
+dev.off()
+
+## FI 
+gg=subset(results, (results$ancestry=='EUR_only_with_FI_FI_covars' |
+                      results$ancestry == 'EUR_only_with_FI_usual_covars'))
+gg$Covariates[gg$ancestry=='EUR_only_with_FI_FI_covars']<- "Covarying for FI"
+gg$Covariates[gg$ancestry=='EUR_only_with_FI_usual_covars']<- "Not covarying for cognitive ability"
+gg=subset(gg,!is.na(gg$Set))
+gg=subset(gg, gg$analysis=='Main')
+gg=subset(gg, gg$ann!='Synonymous rare coding variants')
+gg$Covariates <- factor(gg$Covariates, 
+                       levels = c("Covarying for FI",
+                                  "Not covarying for cognitive ability"))
+
+tiff("PARTICIPATION_burden_FI_covariate.tiff", units = "in", width = 16, height = 9, res = 400)
+ggplot(gg, aes(x = OR, y = phen, colour = variant_class, shape = Covariates)) +
+  geom_pointrange(aes(xmin = lower_CI_OR, xmax = upper_CI_OR), 
+                  position = position_dodge(width = 0.6), size = 1.5) +
+  geom_vline(xintercept = 1, linetype = "dotted") +
+  theme_light() +
+  theme(
+    text = element_text(size = 40),
+    legend.position = "bottom",
+    legend.title = element_blank(),     # Remove legend title
+    legend.text = element_text(size =25))+
+  scale_shape_manual(
+    values = c(
+      "Covarying for FI" = 17,  # triangle
+      "Not covarying for cognitive ability" = 16 # circle
+    )) +
+  labs(x = 'Odds ratio \n', y = "Phenotype")
+dev.off()
+
+```
+
+# IMPACT - all
+## Read in results 
+```{r}
+results=read.csv('results_FI_RT_regressions_AC5_incweighted.csv')
+
+```
+
+## Rename var types AND sets AND phens
+```{r}
+# Drop first col
+results <- results %>% select(-1)
+
+# Relabel var classes
+results <- results %>%
+  mutate(ann = case_when(
+    grepl("PTV_plus_REVEL", indep_var) ~ "Damaging rare coding variants",
+    grepl("synon", indep_var) ~ "Synonymous rare coding variants",
+    grepl("CNV", indep_var) ~ "Rare NPD-associated CNVs",
+    TRUE ~ NA_character_
+  )) %>%
+  mutate(ann = factor(ann, levels = c("Rare NPD-associated CNVs", "Damaging rare coding variants", "Synonymous rare coding variants")))
+
+# Relabel variant types with gene sets too (for major gene sets)
+results$variant_class[results$ann=="Rare NPD-associated CNVs"] <- "Rare NPD- \n associated CNVs"
+results$variant_class[results$ann=="Damaging rare coding variants" &
+                        results$gene_set=='pLI_0.9'] <- "Damaging RCVs in \n LoFi genes"
+results$variant_class[results$ann=="Synonymous rare coding variants" &
+                        results$gene_set=='pLI_0.9'] <- "Synonymous RCVs in \n LoFi genes"
+results$variant_class[results$ann=="Damaging rare coding variants" &
+                        results$gene_set=='NPD_set_SCH_CCG_DD'] <- "Damaging RCVs in \n NPD-associated genes"
+results$variant_class[results$ann=="Synonymous rare coding variants" &
+                        results$gene_set=='NPD_set_SCH_CCG_DD'] <- "Synonymous RCVs in \n NPD-associated genes"
+results$variant_class <- factor(results$variant_class, 
+                          levels = c("Damaging RCVs in \n LoFi genes",
+                                     "Synonymous RCVs in \n LoFi genes",
+                                     "Damaging RCVs in \n NPD-associated genes",
+                                     "Synonymous RCVs in \n NPD-associated genes",
+                                     "Rare NPD- \n associated CNVs"))
+
+results$Set[results$ann=="Rare NPD-associated CNVs"] <- "NPD-associated CNVs"
+results$Set[results$gene_set=='pLI_0.9'] <- "LoFi genes"
+results$Set[results$gene_set=='NPD_set_SCH_CCG_DD'] <- "NPD-associated genes"
+results$Set <- factor(results$Set, 
+                       levels = c("NPD-associated genes",
+                                  'LoFi genes',
+                                  "NPD-associated CNVs"))
+
+# Rename phenotypes and groups
+## Unweighted
+results$group[results$ancestry=='EU_anc_completed_all_online_tests']<-'Completed all online cognitive testing '
+results$weighting[results$ancestry=='EU_anc_completed_all_online_tests']<-'None'
+results$group[results$ancestry=='EU_anc_did_not_complete_all_online_tests']<-'Did not complete all online cognitive testing '
+results$weighting[results$ancestry=='EU_anc_did_not_complete_all_online_tests']<-'None'
+
+## Weighted
+results$group[results$ancestry=='EU_anc_completed_all_online_tests_WEIGHTED']<-'Completed all online cognitive testing '
+results$weighting[results$ancestry=='EU_anc_completed_all_online_tests_WEIGHTED']<-'Weighted'
+results$group[results$ancestry=='EU_anc_did_not_complete_all_online_tests_WEIGHTED']<-'Did not complete all online cognitive testing '
+results$weighting[results$ancestry=='EU_anc_did_not_complete_all_online_tests_WEIGHTED']<-'Weighted'
+
+results$outcome_variable[results$dep_var=='Reaction_time_AC1_mean_time_taken_Zscore_outliersrm']<-'Reaction time '
+results$outcome_variable[results$dep_var=='FI_any_zscore']<-'Fluid intelligence '
+results$outcome_variable <- factor(results$outcome_variable, 
+                       levels = c("Reaction time ",
+                                  'Fluid intelligence '))
+```
+
+## Unweighted
+### Plot
+```{r}
+gg=subset(results, !is.na(results$Set) & results$weighting=='None')
+# Get table of results at this point and then drop synonymous variant burden
+gg=subset(gg, gg$ann!='Synonymous rare coding variants')
+
+tiff("impact_plot_no_weighting_all_online.tiff", units = "in", width = 16, height = 9, res = 400)
+ggplot(gg, aes(x = variant_class, y = beta, colour = group)) +
+  geom_pointrange(aes(ymin = lower_CI, ymax = upper_CI), 
+                  position = position_dodge(width = 0.6), size = 1.5) +
+  geom_hline(yintercept = 0, linetype = "dotted") +
+  theme_light() +
+  theme(text = element_text(size = 30)) +
+  labs(x = '\n Variant class',
+       y = "Beta of association with phenotype")+
+  facet_grid(. ~ outcome_variable) + 
+  theme(
+    legend.position = "bottom",
+    legend.title = element_blank(),    
+    axis.text.x = element_text(size = 15))
+dev.off()
+```
+
+## Weighted
+### Plot
+```{r}
+gg=subset(results, !is.na(results$Set) & ((results$weighting=='Weighted') | (results$weighting=='None')))
+# Get table of results at this point and then drop synonymous variant burden
+gg=subset(gg, gg$ann!='Synonymous rare coding variants')
+
+gg$plot_group <- interaction(gg$weighting, gg$group, sep = "_")
+gg$plot_group <- factor(gg$plot_group,
+  levels = c(
+    "None_Completed all online cognitive testing ",
+    "None_Did not complete all online cognitive testing ",
+    "Weighted_Completed all online cognitive testing ",
+    "Weighted_Did not complete all online cognitive testing "))
+
+tiff("impact_plot_weighted.tiff", units = "in", width = 16, height = 9, res = 400)
+ggplot(gg,
+       aes(x = variant_class,
+           y = beta,
+           colour = group,
+           shape = weighting,
+           group = plot_group)) +
+  geom_pointrange(aes(ymin = lower_CI,
+                      ymax = upper_CI),
+                  position = position_dodge(width = 0.6),
+                  size = 1.5) +
+  geom_hline(yintercept = 0, linetype = "dotted") +
+  theme_light() +
+  theme(text = element_text(size = 30)) +
+  labs(x = '\n Variant class',
+       y = "Beta of association with phenotype")+
+  facet_grid(. ~ outcome_variable) + 
+  theme(
+    legend.position = "bottom",
+    legend.title = element_blank(),    
+    axis.text.x = element_text(size = 15))
+dev.off()
+```
+

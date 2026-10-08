@@ -1,0 +1,659 @@
+---
+title: "19_interaction_analysis"
+output: html_document
+date: "2025-08-26"
+---
+This script runs for <1 hour on a mem1_ssd1_v2_x16 RStudio instance.
+
+This script follows on from stage 18 and uses the same data preparation. Instead of splitting people into those who did and didn't complete all the online cognitive tests, an interaction is added between variant burden and completing the online tests. This tests directly whether the effect of damaging rare coding variants, synonymous variants or pathogenic CNVs on cognition (fluid intelligence and reaction time) differs by participation.
+
+# Load libraries
+```{r}
+library(data.table)
+library(dplyr)
+library(purrr)
+install.packages('broom')
+library(broom)
+library(ggplot2)
+library(tidyr)
+install.packages('car')
+library(car)
+install.packages("brglm2")
+library(brglm2)
+install.packages('rcompanion')
+library(rcompanion)
+install.packages('weights')
+library(weights)
+library(lubridate)
+```
+
+
+# Prep data
+## Phenotypes
+### Cognitive phenotypes
+```{r}
+system('dx download /participation_bias/phenotypes_all_cleaned_inc_reweighting.csv')
+phen=read.csv('phenotypes_all_cleaned_inc_reweighting.csv', header=T)
+
+# any instance
+phen <- phen %>%
+  mutate(
+    FI_any = coalesce(
+      FI_AC1_n_correct_answers,
+      FI_AC2_n_correct_answers,
+      FI_AC3_n_correct_answers,
+      FI_AC4_n_correct_answers,
+      FI_online1_n_correct_answers,
+      FI_online2_n_correct_answers),
+    FI_score_source = case_when(
+      !is.na(FI_AC1_n_correct_answers) ~ "FI_AC1",
+      !is.na(FI_AC2_n_correct_answers) ~ "FI_AC2",
+      !is.na(FI_AC3_n_correct_answers) ~ "FI_AC3",
+      !is.na(FI_AC4_n_correct_answers) ~ "FI_AC4",
+      !is.na(FI_online1_n_correct_answers) ~ "FI_online1",
+      !is.na(FI_online2_n_correct_answers) ~ "FI_online2",      
+      TRUE ~ NA_character_ ))
+phen$FI_any_zscore <- (phen$FI_any - mean(phen$FI_any, na.rm = TRUE)) / 
+                           sd(phen$FI_any, na.rm = TRUE)
+
+# Code RT so higher = better cognition
+phen$Reaction_time_AC1_mean_time_taken_Zscore_outliersrm <- (phen$Reaction_time_AC1_mean_time_taken_Zscore_outliersrm)*(-1)
+
+```
+
+## Ancestries
+Ancestry PCs are from stage 9 of the WES processing repository (https://github.com/eilidhfenner/UKBB_RAP_WES).
+```{r}
+system('dx download genetic_ancestries/ancestries_PCs.csv')
+ancs=read.csv('ancestries_PCs.csv')
+phen=merge(phen, ancs, by.x = 'eid', by.y='eid_13310')
+rm(ancs)
+gc()
+```
+
+## Genetic QC
+Filter to those passing the final QC stage (sex imputation). The list of IDs with discordant sex is from stage 8 of the WES processing repository (https://github.com/eilidhfenner/UKBB_RAP_WES).
+```{r}
+system('dx download ./WES_QC/discordant_sex_ids.csv')
+ids_to_rm=read.csv('discordant_sex_ids.csv')
+ids_to_rm$remove=T
+phen=merge(phen, ids_to_rm, by.x = 'eid', by.y='x', all=T)
+phen=subset(phen, is.na(phen$remove)) 
+rm(ids_to_rm)
+```
+
+## Covariates
+Read in covariates (and prep for use). These phenotypes were selected in cohort browser and written out using the Table Exporter tool. 
+```{r}
+system('dx download ./phenotype_cohorts/covars_participant.csv')
+covars=read.csv('covars_participant.csv', header=T)
+covars$seq_batch<-covars$p32050
+covars$AC_attended<-covars$p54_i0
+covars$sex_1male[covars$p31 == 'Male']<-1
+covars$sex_1male[covars$p31 == 'Female']<-2
+covars$standardised_age <- (covars$p21022 - mean(covars$p21022, na.rm = TRUE)) / sd(covars$p21022, na.rm = TRUE)
+covars$standardised_age_squared<-covars$standardised_age*covars$standardised_age
+covars$sex_standardised_age<-covars$sex_1male * covars$standardised_age
+covars$sex_standardised_age_squared<-covars$sex_1male * covars$standardised_age_squared
+
+system('dx download ./SZ_PRS/array_batch_participant.csv')
+array_batch=read.csv('array_batch_participant.csv')
+array_batch %>% count(array_batch$p22000)
+array_batch=subset(array_batch, array_batch$p22000!='')
+array_batch$genotype_batch<-array_batch$p22000
+array_batch=array_batch[,c(1,3)]
+covars=merge(covars, array_batch, by='eid')
+
+phen=merge(phen, covars, by.x='eid', by.y='eid')
+rm(covars)
+rm(array_batch)
+gc()
+```
+
+## Genetic data
+### RCVs
+Get counts
+```{r}
+AC='5orless'
+system('dx download ./Variant_counts/Gene_sets/*_AC5orless_*.csv --overwrite')
+
+# REMOVE SINGLE GENE TABLES HERE!!
+file_list <- list.files(path = "./", pattern = "*_AC5orless_counts.csv", full.names = TRUE)
+
+# Read, drop first column (V1), and merge each file
+counts <- lapply(file_list, function(file) {
+  data <- fread(file)  # Read the file
+  data[, V1 := NULL]  # Drop the first column (V1)
+  return(data)
+}) %>%
+reduce(function(x, y) merge(x, y, by = "Sample_ID", all = TRUE))  # Merge the data frames
+
+# Merge
+all_ancs=merge(phen, counts, by.x='eid', by.y='Sample_ID') 
+```
+
+### CNVs 
+Pathogenic CNV calls are from Kendall et al. (2017, Biol. Psychiatry 82:103–110; 2019, Br. J. Psychiatry 214:297–304).
+```{r}
+system('dx download ./NDD_CNVs/Pathogenic_CNVs.csv')
+CNVs=read.csv('Pathogenic_CNVs.csv')
+CNVs$has_CNV_data<-T
+CNVs %>% count(filter_good_CNVs)
+CNVs$carries_HQ_CNV<-F
+CNVs$carries_HQ_CNV[CNVs$filter_good_CNVs=='Selected']<-T
+
+CNVs$SZ_enriched_CNV_carrier <- TRUE
+CNVs$SZ_enriched_CNV_carrier[CNVs$carries_HQ_CNV==F]<-NA
+CNVs %>% count(SZ_enriched_CNV_carrier)
+
+
+CNVs_simple = CNVs[,c('eid','has_CNV_data', 
+                      'carries_HQ_CNV', 'SZ_enriched_CNV_carrier')]
+
+# Count n CNVs per person
+cnv_counts <- CNVs_simple %>%
+  group_by(eid) %>%
+  summarise(n_CNVs = n())  # n() counts the number of rows per eid
+
+# Diff field with just whether someone has any cnv or not 
+CNVs_summary <- CNVs_simple %>%
+  group_by(eid) %>%
+  summarise(across(everything(), any)) 
+
+# Add n cnvs to table 
+CNVs_summary <- CNVs_summary %>%
+  left_join(cnv_counts, by = "eid") 
+
+
+combined = merge(all_ancs, CNVs_summary, by = 'eid', all.x=T) 
+
+combined$n_CNVs_carried <- combined$n_CNVs
+combined$n_CNVs_carried[is.na(combined$n_CNVs)] <- 0
+combined$n_CNVs_carried[combined$carries_HQ_CNV==F]<-NA
+combined %>% count(n_CNVs_carried)
+
+all_ancs=subset(combined, !is.na(combined$n_CNVs_carried))
+
+
+```
+
+
+### RCV processing - add PTV+Miss RCVs 
+```{r}
+sets <- list('pLI_0.9',
+             'NPD_set_SCH_CCG_DD')
+library(stringr)
+
+# Loop over each set name and create a new column for PTV + MIss
+for (set_name in sets) {
+  ptv_col <- paste0("HC_PTV_AC5orless_", set_name, "_total")
+  miss_col <- paste0("REVEL75_Miss_AC5orless_", set_name, "_total")
+
+  if (ptv_col %in% colnames(all_ancs) && miss_col %in% colnames(all_ancs)) {
+    new_col <- paste0("HC_PTV_plus_REVEL75_Miss_AC5orless_", set_name, "_total")
+    all_ancs[[new_col]] <- all_ancs[[ptv_col]] + all_ancs[[miss_col]]
+  } else {
+    warning(paste("Missing expected columns for set:", set_name))
+    if (!(ptv_col %in% colnames(all_ancs))) message("  PTV column missing: ", ptv_col)
+    if (!(miss_col %in% colnames(all_ancs))) message("  REVEL75_Miss column missing: ", miss_col)
+  }
+}
+```
+
+## Examine counts of variants and of phenotypes
+```{r}
+all_ancs %>% count(HC_PTV_plus_REVEL75_Miss_AC5orless_pLI_0.9_total)
+all_ancs %>% count(HC_PTV_plus_REVEL75_Miss_AC5orless_NPD_set_SCH_CCG_DD_total)
+all_ancs %>% count(n_CNVs_carried)
+
+all_ancs %>%
+  count(willing_to_attempt_cog_tests_at_baseline) %>%
+  mutate(percentage = round(100 * n / sum(n), 2))
+
+all_ancs %>%
+  count(completed_any_test_online_cog_either) %>%
+  mutate(percentage = round(100 * n / sum(n), 2))
+
+all_ancs %>%
+  count(completed_all_test_online_cog_both) %>%
+  mutate(percentage = round(100 * n / sum(n), 2))
+
+
+
+# Cognitive tests
+all_ancs %>% count(FI_any_zscore)
+has_FI=subset(all_ancs, !is.na(all_ancs$FI_any_zscore))
+has_FI %>% count(FI_score_source)
+all_ancs %>% count(Reaction_time_AC1_mean_time_taken_Zscore_outliersrm)
+has_RT=subset(all_ancs, !is.na(all_ancs$Reaction_time_AC1_mean_time_taken_Zscore_outliersrm))
+```
+
+## Clear mem
+Can also remove files with RCV counts at this point. 
+```{r}
+rm(phen)
+rm(counts)
+gc()
+```
+
+## Recode phenotypes 
+1 = not participated, so that ORs make sense
+```{r}
+# Clean phens - recode binary phenotypes so they're all in the same direction: 1 = lower participation
+dependent_var_pos<-c('completed_any_test_online_cog_either',
+                     'completed_all_test_online_cog_both',
+                     'willing_to_attempt_cog_tests_at_baseline')
+
+dependent_var<-list('completed_any_test_online_cog_either',
+                     'completed_all_test_online_cog_both',
+                     'willing_to_attempt_cog_tests_at_baseline',
+                     'no_MHQ',
+                     'lost_to_follow_up',
+                     'no_email_access')
+
+# Convert these binary variables (currently listed as T/F into 0 and 1) - all now coded as 1 = did not participate and 0 = did participate 
+all_ancs <- all_ancs %>%
+  mutate(across(all_of(dependent_var_pos), ~ ifelse(. == TRUE, 0, ifelse(. == FALSE, 1, NA))))
+all_ancs %>% count(completed_all_test_online_cog_both)
+
+```
+
+## Subset by genetically inferred ancestry 
+```{r}
+# Make subsets for diff ancs
+EU_ancs=subset(all_ancs, all_ancs$EUR>0.8)
+EU_ancs_og <- EU_ancs
+AAC_ancs=subset(all_ancs, all_ancs$AAC>0.8)
+EAS_ancs=subset(all_ancs, all_ancs$EAS>0.8)
+LAT_ancs=subset(all_ancs, all_ancs$LAT>0.8)
+SAS_ancs=subset(all_ancs, all_ancs$SAS>0.8)
+SSA_ancs=subset(all_ancs, all_ancs$SSA>0.8)
+ADM_ancs=subset(all_ancs, (all_ancs$AAC<=0.8 & all_ancs$EAS<=0.8 & 
+                              all_ancs$EUR<=0.8 & all_ancs$LAT<=0.8 & 
+                              all_ancs$SAS<=0.8 & all_ancs$SSA<=0.8))
+
+```
+
+## Set gene sets 
+```{r}
+sets <- list('pLI_0.9',
+             'NPD_set_SCH_CCG_DD')
+
+
+```
+
+## Prep results table 
+```{r}
+results <- data.frame(
+  gene_set=character(),
+  dep_var = character(),
+  indep_var = character(),
+  allele_count = numeric(),
+  beta = numeric(),
+  SE = numeric(),
+  lower_CI = numeric(),
+  upper_CI = numeric(),
+  p_value = numeric(),
+  n_vars = integer(),
+  n_people = integer(),
+  ancestry=character(),
+  stringsAsFactors = FALSE
+)
+```
+
+## IMPACT
+### FI as outcome
+#### Non-synonymous vars 
+```{r}
+var_types<-list('HC_PTV_plus_REVEL75_Miss')
+dependent_var<-list('FI_any_zscore')
+a=subset(EU_ancs_og, !is.na(EU_ancs_og$FI_any_zscore))
+
+a %>% count(AAC) # Only 1 non-0 value, drop
+a %>% count(EAS) # Only 4 non-0 values, drop
+a %>% count(LAT) # Lots of non-0 values, keep as a useful covar
+a %>% count(SAS) #  Lots of non-0 values, keep as a useful covar
+a %>% count(SSA) # 0 non-0 values, drop
+
+covars_Eu_anc_NS <- 'seq_batch + AC_attended + sex_1male + standardised_age + standardised_age_squared + sex_standardised_age + sex_standardised_age_squared + synonymous_AC5orless_exome_wide_total + LAT + SAS + EU_PC1 + EU_PC2 + EU_PC3 + EU_PC4 + EU_PC5 + EU_PC6 + EU_PC7 + EU_PC8 + EU_PC9 + EU_PC10'
+
+covars_Eu_anc_syn <- 'seq_batch + AC_attended + sex_1male + standardised_age + standardised_age_squared + sex_standardised_age + sex_standardised_age_squared + LAT + SAS + EU_PC1 + EU_PC2 + EU_PC3 + EU_PC4 + EU_PC5 + EU_PC6 + EU_PC7 + EU_PC8 + EU_PC9 + EU_PC10'
+
+covars_Eu_anc_CNV <- 'genotype_batch + AC_attended + sex_1male + standardised_age + standardised_age_squared + sex_standardised_age + sex_standardised_age_squared + LAT + SAS + EU_PC1 + EU_PC2 + EU_PC3 + EU_PC4 + EU_PC5 + EU_PC6 + EU_PC7 + EU_PC8 + EU_PC9 + EU_PC10'
+```
+
+```{r}
+EU_ancs=a
+
+for (dep_var in dependent_var) {
+  # Loop through each independent variable type
+  for (var in var_types) {
+    # Loop through each set
+    for (set in sets) {
+      independent_var <- paste0(var, '_AC', AC, '_', set, '_total')
+      formula <- as.formula(paste(dep_var, "~", independent_var, "*completed_all_test_online_cog_both +", covars_Eu_anc_NS))
+      model <- lm(formula, data = EU_ancs) 
+      tidy_model <- tidy(model)
+
+   terms_to_extract <- c(independent_var, 
+                      "completed_all_test_online_cog_both", 
+                      paste0(independent_var, ":completed_all_test_online_cog_both"))
+
+    for (term in terms_to_extract) {
+      if (term %in% tidy_model$term) {
+    row <- tidy_model[tidy_model$term == term, ]
+    conf <- confint(model)[term, ]
+    
+    beta <- row$estimate
+    SE <- row$std.error
+    p_value <- row$p.value
+    lower_CI <- conf[1]
+    upper_CI <- conf[2]
+
+    with_phen <- subset(EU_ancs, !is.na(EU_ancs[[dep_var]]))
+    n_people <- nrow(with_phen)
+    n_vars <- sum(with_phen[[independent_var]])
+    anc_set <- 'EU_anc'
+    
+    results <- rbind(results, data.frame(
+      gene_set = set,
+      dep_var = dep_var,
+      indep_var = paste0(independent_var, "_", term),  # label so you know which effect
+      allele_count = AC,
+      beta = beta,
+      SE = SE,
+      lower_CI = lower_CI,
+      upper_CI = upper_CI,
+      p_value = p_value,
+      n_vars = n_vars,
+      n_people = n_people,
+      ancestry = anc_set,
+      stringsAsFactors = FALSE
+    ))
+  }
+}}}}
+
+
+```
+
+
+#### Synonymous vars  
+```{r}
+var_types<-list('synonymous')
+
+for (dep_var in dependent_var) {
+  # Loop through each independent variable type
+  for (var in var_types) {
+    # Loop through each set
+    for (set in sets) {
+      independent_var <- paste0(var, '_AC', AC, '_', set, '_total')
+      formula <- as.formula(paste(dep_var, "~", independent_var, "*completed_all_test_online_cog_both +", covars_Eu_anc_syn))
+      model <- lm(formula, data = EU_ancs) 
+      tidy_model <- tidy(model)
+
+   terms_to_extract <- c(independent_var, 
+                      "completed_all_test_online_cog_both", 
+                      paste0(independent_var, ":completed_all_test_online_cog_both"))
+
+    for (term in terms_to_extract) {
+      if (term %in% tidy_model$term) {
+    row <- tidy_model[tidy_model$term == term, ]
+    conf <- confint(model)[term, ]
+    
+    beta <- row$estimate
+    SE <- row$std.error
+    p_value <- row$p.value
+    lower_CI <- conf[1]
+    upper_CI <- conf[2]
+
+    with_phen <- subset(EU_ancs, !is.na(EU_ancs[[dep_var]]))
+    n_people <- nrow(with_phen)
+    n_vars <- sum(with_phen[[independent_var]])
+    anc_set <- 'EU_anc'
+    
+    results <- rbind(results, data.frame(
+      gene_set = set,
+      dep_var = dep_var,
+      indep_var = paste0(independent_var, "_", term),  # label so you know which effect
+      allele_count = AC,
+      beta = beta,
+      SE = SE,
+      lower_CI = lower_CI,
+      upper_CI = upper_CI,
+      p_value = p_value,
+      n_vars = n_vars,
+      n_people = n_people,
+      ancestry = anc_set,
+      stringsAsFactors = FALSE
+    ))
+  }
+}}}}
+```
+
+#### CNVs  
+```{r}
+
+for (dep_var in dependent_var) {
+      independent_var <- 'n_CNVs_carried'
+      formula <- as.formula(paste(dep_var, "~", independent_var, "*completed_all_test_online_cog_both +", covars_Eu_anc_CNV))
+      model <- lm(formula, data = EU_ancs) 
+      tidy_model <- tidy(model)
+
+   terms_to_extract <- c(independent_var, 
+                      "completed_all_test_online_cog_both", 
+                      paste0(independent_var, ":completed_all_test_online_cog_both"))
+
+    for (term in terms_to_extract) {
+      if (term %in% tidy_model$term) {
+    row <- tidy_model[tidy_model$term == term, ]
+    conf <- confint(model)[term, ]
+    
+    beta <- row$estimate
+    SE <- row$std.error
+    p_value <- row$p.value
+    lower_CI <- conf[1]
+    upper_CI <- conf[2]
+
+    with_phen <- subset(EU_ancs, !is.na(EU_ancs[[dep_var]]))
+    n_people <- nrow(with_phen)
+    n_vars <- sum(with_phen[[independent_var]])
+    anc_set <- 'EU_anc'
+    
+    results <- rbind(results, data.frame(
+      gene_set = NA,
+      dep_var = dep_var,
+      indep_var = paste0(independent_var, "_", term),  # label so you know which effect
+      allele_count = AC,
+      beta = beta,
+      SE = SE,
+      lower_CI = lower_CI,
+      upper_CI = upper_CI,
+      p_value = p_value,
+      n_vars = n_vars,
+      n_people = n_people,
+      ancestry = anc_set,
+      stringsAsFactors = FALSE
+    ))
+  }
+    }}
+```
+
+### RT as outcome 
+#### Non-synonymous vars 
+```{r}
+var_types<-list('HC_PTV_plus_REVEL75_Miss')
+dependent_var<-list('Reaction_time_AC1_mean_time_taken_Zscore_outliersrm')
+a=subset(EU_ancs_og, !is.na(EU_ancs_og$Reaction_time_AC1_mean_time_taken_Zscore_outliersrm))
+
+a %>% count(AAC) # Only 2 non-0 values, drop
+a %>% count(EAS) # Only 5 non-0 values, drop
+a %>% count(LAT) # Lots of non-0 values, keep as a useful covar
+a %>% count(SAS) #  Lots of non-0 values, keep as a useful covar
+a %>% count(SSA) # 0 non-0 values, drop
+
+# Therefore same covars as in FI 
+```
+
+```{r}
+EU_ancs=a
+
+for (dep_var in dependent_var) {
+  # Loop through each independent variable type
+  for (var in var_types) {
+    # Loop through each set
+    for (set in sets) {
+      independent_var <- paste0(var, '_AC', AC, '_', set, '_total')
+      formula <- as.formula(paste(dep_var, "~", independent_var, "*completed_all_test_online_cog_both +", covars_Eu_anc_NS))
+      model <- lm(formula, data = EU_ancs) 
+      tidy_model <- tidy(model)
+
+   terms_to_extract <- c(independent_var, 
+                      "completed_all_test_online_cog_both", 
+                      paste0(independent_var, ":completed_all_test_online_cog_both"))
+
+    for (term in terms_to_extract) {
+      if (term %in% tidy_model$term) {
+    row <- tidy_model[tidy_model$term == term, ]
+    conf <- confint(model)[term, ]
+    
+    beta <- row$estimate
+    SE <- row$std.error
+    p_value <- row$p.value
+    lower_CI <- conf[1]
+    upper_CI <- conf[2]
+
+    with_phen <- subset(EU_ancs, !is.na(EU_ancs[[dep_var]]))
+    n_people <- nrow(with_phen)
+    n_vars <- sum(with_phen[[independent_var]])
+    anc_set <- 'EU_anc'
+    
+    results <- rbind(results, data.frame(
+      gene_set = set,
+      dep_var = dep_var,
+      indep_var = paste0(independent_var, "_", term),  # label so you know which effect
+      allele_count = AC,
+      beta = beta,
+      SE = SE,
+      lower_CI = lower_CI,
+      upper_CI = upper_CI,
+      p_value = p_value,
+      n_vars = n_vars,
+      n_people = n_people,
+      ancestry = anc_set,
+      stringsAsFactors = FALSE
+    ))
+  }
+}}}}
+
+
+```
+
+
+#### Synonymous vars  
+```{r}
+var_types<-list('synonymous')
+
+for (dep_var in dependent_var) {
+  # Loop through each independent variable type
+  for (var in var_types) {
+    # Loop through each set
+    for (set in sets) {
+      independent_var <- paste0(var, '_AC', AC, '_', set, '_total')
+      formula <- as.formula(paste(dep_var, "~", independent_var, "*completed_all_test_online_cog_both +", covars_Eu_anc_syn))
+      model <- lm(formula, data = EU_ancs) 
+      tidy_model <- tidy(model)
+
+   terms_to_extract <- c(independent_var, 
+                      "completed_all_test_online_cog_both", 
+                      paste0(independent_var, ":completed_all_test_online_cog_both"))
+
+    for (term in terms_to_extract) {
+      if (term %in% tidy_model$term) {
+    row <- tidy_model[tidy_model$term == term, ]
+    conf <- confint(model)[term, ]
+    
+    beta <- row$estimate
+    SE <- row$std.error
+    p_value <- row$p.value
+    lower_CI <- conf[1]
+    upper_CI <- conf[2]
+
+    with_phen <- subset(EU_ancs, !is.na(EU_ancs[[dep_var]]))
+    n_people <- nrow(with_phen)
+    n_vars <- sum(with_phen[[independent_var]])
+    anc_set <- 'EU_anc'
+    
+    results <- rbind(results, data.frame(
+      gene_set = set,
+      dep_var = dep_var,
+      indep_var = paste0(independent_var, "_", term),  # label so you know which effect
+      allele_count = AC,
+      beta = beta,
+      SE = SE,
+      lower_CI = lower_CI,
+      upper_CI = upper_CI,
+      p_value = p_value,
+      n_vars = n_vars,
+      n_people = n_people,
+      ancestry = anc_set,
+      stringsAsFactors = FALSE
+    ))
+  }
+}}}}
+```
+
+#### CNVs  
+```{r}
+
+for (dep_var in dependent_var) {
+      independent_var <- 'n_CNVs_carried'
+      formula <- as.formula(paste(dep_var, "~", independent_var, "*completed_all_test_online_cog_both +", covars_Eu_anc_CNV))
+      model <- lm(formula, data = EU_ancs) 
+      tidy_model <- tidy(model)
+
+   terms_to_extract <- c(independent_var, 
+                      "completed_all_test_online_cog_both", 
+                      paste0(independent_var, ":completed_all_test_online_cog_both"))
+
+    for (term in terms_to_extract) {
+      if (term %in% tidy_model$term) {
+    row <- tidy_model[tidy_model$term == term, ]
+    conf <- confint(model)[term, ]
+    
+    beta <- row$estimate
+    SE <- row$std.error
+    p_value <- row$p.value
+    lower_CI <- conf[1]
+    upper_CI <- conf[2]
+
+    with_phen <- subset(EU_ancs, !is.na(EU_ancs[[dep_var]]))
+    n_people <- nrow(with_phen)
+    n_vars <- sum(with_phen[[independent_var]])
+    anc_set <- 'EU_anc'
+    
+    results <- rbind(results, data.frame(
+      gene_set = NA,
+      dep_var = dep_var,
+      indep_var = paste0(independent_var, "_", term),  # label so you know which effect
+      allele_count = AC,
+      beta = beta,
+      SE = SE,
+      lower_CI = lower_CI,
+      upper_CI = upper_CI,
+      p_value = p_value,
+      n_vars = n_vars,
+      n_people = n_people,
+      ancestry = anc_set,
+      stringsAsFactors = FALSE
+    ))
+  }
+    }}
+```
+
+### Write out results 
+```{r}
+write.csv(results, 'results_FI_RT_interaction_regressions_AC5_unweighted.csv')
+system('dx upload results_FI_RT_interaction_regressions_AC5_unweighted.csv --destination /participation_bias/inc_HCPTVs/')
+```
+
+
