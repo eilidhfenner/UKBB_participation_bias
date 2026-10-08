@@ -33,7 +33,7 @@ Scripts are numbered in the order they were run, carrying on from the WES reposi
     - Run locally on the results downloaded from stage 18. Plots the results.
 
 ## Data access
-UK Biobank data are available to approved researchers through the [UK Biobank access process](https://www.ukbiobank.ac.uk/enable-your-research). This analysis was run under application 13310.
+UK Biobank data are available to approved researchers through the [UK Biobank](https://www.ukbiobank.ac.uk/enable-your-research). This analysis was run under application 13310.
 
 ## Citation
 If you use this code, please cite the associated preprint.
